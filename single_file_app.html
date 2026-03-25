@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Neighbor Club Affiliate Portal</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#f9fafb}
+input,textarea,button,select{font-family:inherit}
+a{color:inherit}pre{font-family:inherit}
+#config-banner{position:fixed;inset:0;z-index:9999;background:#f9fafb;display:flex;align-items:center;justify-content:center}
+.cfg-card{width:480px;background:#fff;border-radius:16px;border:1px solid #e2e8f0;padding:40px 36px;box-shadow:0 4px 24px rgba(0,0,0,.08)}
+.cfg-card h2{font-size:20px;font-weight:800;color:#14532d;margin-bottom:6px}
+.cfg-card p{font-size:14px;color:#6b7280;margin-bottom:24px;line-height:1.6}
+.cfg-field{margin-bottom:16px}
+.cfg-field label{display:block;font-size:13px;font-weight:600;color:#14532d;margin-bottom:5px}
+.cfg-field input{width:100%;padding:10px 14px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:14px;font-family:inherit}
+.cfg-save{width:100%;padding:10px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit}
+.cfg-note{margin-top:14px;font-size:12px;color:#6b7280;text-align:center}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div id="config-banner" style="display:none">
+  <div class="cfg-card">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+      <div style="width:42px;height:42px;background:#16a34a;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:20px">N</div>
+      <div><div style="font-weight:800;font-size:16px;color:#14532d">Neighbor Serve</div><div style="font-size:12px;color:#6b7280">First-time setup</div></div>
+    </div>
+    <h2>Connect to Supabase</h2>
+    <p>Enter your Supabase project credentials. These are saved in your browser and never leave your device.</p>
+    <div class="cfg-field"><label>Supabase Project URL</label><input id="cfg-url" placeholder="https://xxxxxxxxxxxx.supabase.co"/></div>
+    <div class="cfg-field"><label>Supabase Anon Key</label><input id="cfg-key" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."/></div>
+    <button class="cfg-save" onclick="saveConfig()">Save & Continue</button>
+    <div class="cfg-note">Find these in Supabase → Project Settings → API</div>
+  </div>
+</div>
+<div id="root"></div>
+<script>
+// ── Config ─────────────────────────────────────────────────────────────────
+const CONFIG_KEY='nc_supabase_config';
+function getConfig(){try{return JSON.parse(localStorage.getItem(CONFIG_KEY)||'null')}catch{return null}}
+function saveConfig(){
+  const url=document.getElementById('cfg-url').value.trim();
+  const key=document.getElementById('cfg-key').value.trim();
+  if(!url||!key)return alert('Both fields are required.');
+  localStorage.setItem(CONFIG_KEY,JSON.stringify({url,key}));
+  document.getElementById('config-banner').style.display='none';
+  initApp();
+}
+const cfg=getConfig();
+if(!cfg)document.getElementById('config-banner').style.display='flex';
+
+// ── Supabase ───────────────────────────────────────────────────────────────
+let sb=null;
+function getSB(){if(!sb){const c=getConfig();if(!c)return null;sb=supabase.createClient(c.url,c.key);}return sb;}
+const db={
+  partners:        ()=>getSB().from('partners').select('*').order('date_added',{ascending:false}),
+  partnerBySlug:   (slug)=>getSB().from('partners').select('*').eq('slug',slug).single(),
+  createPartner:   (p)=>getSB().from('partners').insert(p).select().single(),
+  updatePartner:   (id,u)=>getSB().from('partners').update(u).eq('id',id).select().single(),
+  deletePartner:   (id)=>getSB().from('partners').delete().eq('id',id),
+  partnerTmpls:    (pid)=>getSB().from('messaging_templates').select('*').eq('partner_id',pid),
+  upsertTmpls:     (pid,ts)=>getSB().from('messaging_templates').upsert(ts.map(t=>({...t,partner_id:pid})),{onConflict:'partner_id,template_id'}),
+  globalPages:     ()=>getSB().from('global_pages').select('*'),
+  updateGlobalPage:(id,blocks)=>getSB().from('global_pages').update({blocks}).eq('id',id),
+  globalTmpls:     ()=>getSB().from('global_templates').select('*').order('id'),
+  updateGlobalTmpl:(id,body)=>getSB().from('global_templates').update({body}).eq('id',id),
+  signIn:          (e,p)=>getSB().auth.signInWithPassword({email:e,password:p}),
+  signOut:         ()=>getSB().auth.signOut(),
+  getSession:      ()=>getSB().auth.getSession(),
+  onAuthChange:    (cb)=>getSB().auth.onAuthStateChange(cb),
+};
+
+// ── React ──────────────────────────────────────────────────────────────────
+const {useState,useEffect,useRef}=React;
+const h=React.createElement;
+const B={primary:'#16a34a',dark:'#14532d',light:'#dcfce7',accent:'#22c55e',muted:'#6b7280',border:'#e2e8f0',bg:'#f9fafb'};
+const PAGES=[
+  {id:'social',      label:'Social',             icon:'📱'},
+  {id:'news',        label:'In The News',         icon:'📰'},
+  {id:'messaging',   label:'Messaging Templates', icon:'✉️'},
+  {id:'testimonials',label:'Testimonials',        icon:'🗣️'},
+];
+const slugify=s=>s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
+const initials=n=>n.split(' ').map(w=>w[0]).join('').toUpperCase();
+const avatarColor=s=>{let hh=0;for(let c of s)hh=(hh*31+c.charCodeAt(0))%360;return `hsl(${hh},55%,42%)`};
+const sub=(text,p)=>text
+  .replace(/{{PARTNER_NAME}}/g,p.name).replace(/{{PARTNER_COMPANY}}/g,p.company||'')
+  .replace(/{{PARTNER_LINK}}/g,p.portal_url).replace(/{{FIRST_NAME}}/g,"[Recipient's First Name]");
+const uid=()=>Math.random().toString(36).slice(2,10);
+
+// ── Atoms ──────────────────────────────────────────────────────────────────
+const Pill=({label,color=B.primary,bg=B.light})=>h('span',{style:{padding:'2px 10px',background:bg,color,borderRadius:20,fontSize:12,fontWeight:700}},label);
+function Btn({children,onClick,variant='primary',size='md',style:sx={},disabled}){
+  const pad={sm:'4px 12px',md:'8px 18px',lg:'10px 24px'}[size];
+  const v={primary:{background:B.primary,color:'#fff',border:'none'},outline:{background:'#fff',color:B.primary,border:`1.5px solid ${B.primary}`},ghost:{background:'transparent',color:B.muted,border:'none'},danger:{background:'#fee2e2',color:'#dc2626',border:'none'},amber:{background:'#fef3c7',color:'#92400e',border:'1px solid #fcd34d'}}[variant];
+  return h('button',{onClick,disabled,style:{padding:pad,borderRadius:8,cursor:disabled?'not-allowed':'pointer',fontWeight:600,fontSize:13,opacity:disabled?.5:1,...v,...sx}},children);
+}
+function CopyBtn({text}){
+  const [ok,setOk]=useState(false);
+  return h(Btn,{variant:'outline',size:'sm',onClick:()=>{navigator.clipboard.writeText(text);setOk(true);setTimeout(()=>setOk(false),2000);}},ok?'✓ Copied':'Copy');
+}
+function Toggle({checked,onChange}){
+  return h('div',{onClick:()=>onChange(!checked),style:{width:40,height:22,borderRadius:11,background:checked?B.primary:'#d1d5db',cursor:'pointer',position:'relative',transition:'background .2s',flexShrink:0}},
+    h('div',{style:{width:18,height:18,borderRadius:9,background:'#fff',position:'absolute',top:2,left:checked?20:2,transition:'left .2s',boxShadow:'0 1px 3px rgba(0,0,0,.2)'}}));
+}
+function Spinner(){return h('div',{style:{display:'flex',alignItems:'center',justifyContent:'center',padding:60}},h('div',{style:{width:32,height:32,border:`3px solid ${B.light}`,borderTopColor:B.primary,borderRadius:'50%',animation:'spin .7s linear infinite'}}));}
+function Field({label,value,onChange,type='text',placeholder='',rows=3}){
+  return h('div',{style:{marginBottom:14}},[
+    label&&h('label',{style:{display:'block',fontSize:12,fontWeight:600,color:B.dark,marginBottom:4}},label),
+    type==='textarea'
+      ? h('textarea',{value,onChange:e=>onChange(e.target.value),placeholder,rows,style:{width:'100%',padding:'8px 12px',border:`1.5px solid ${B.border}`,borderRadius:8,fontSize:14,resize:'vertical',boxSizing:'border-box',lineHeight:1.6}})
+      : h('input',{type,value,onChange:e=>onChange(e.target.value),placeholder,style:{width:'100%',padding:'8px 12px',border:`1.5px solid ${B.border}`,borderRadius:8,fontSize:14,boxSizing:'border-box'}}),
+  ]);
+}
+
+// ── News cards ─────────────────────────────────────────────────────────────
+function NewsCards({items}){
+  const [open,setOpen]=useState(null);
+  const [copied,setCopied]=useState(null);
+  const copyLink=(url,i,e)=>{e.stopPropagation();navigator.clipboard.writeText(url);setCopied(i);setTimeout(()=>setCopied(null),2000);};
+  return h('div',{style:{display:'flex',flexDirection:'column',gap:10,marginBottom:20}},[
+    ...items.map((item,i)=>h('div',{key:i,style:{position:'relative'}},[
+      h('div',{onClick:()=>setOpen(open===i?null:i),style:{display:'flex',alignItems:'flex-start',gap:14,padding:'14px 18px',background:open===i?B.light:'#f8fafc',border:`1.5px solid ${open===i?B.accent:B.border}`,borderRadius:10,cursor:'pointer'}},[
+        h('span',{style:{fontSize:22,flexShrink:0}},item.icon),
+        h('div',{style:{flex:1}},[h('div',{style:{fontWeight:600,color:B.dark,fontSize:15,marginBottom:2}},item.title),h('div',{style:{fontSize:13,color:B.muted}},item.source)]),
+        h('span',{style:{color:B.primary,flexShrink:0,display:'inline-block',transform:open===i?'rotate(90deg)':'none',transition:'transform .2s'}},'›'),
+      ]),
+      open===i&&h('div',{style:{position:'absolute',top:'calc(100% + 4px)',right:0,zIndex:10,background:'#fff',border:`1.5px solid ${B.border}`,borderRadius:10,boxShadow:'0 8px 24px rgba(0,0,0,.1)',overflow:'hidden',minWidth:200}},[
+        h('a',{href:item.url,target:'_blank',rel:'noreferrer',onClick:()=>setOpen(null),style:{display:'flex',alignItems:'center',gap:10,padding:'12px 16px',textDecoration:'none',color:B.dark,fontWeight:600,fontSize:14,borderBottom:`1px solid ${B.border}`}},'🔗 Visit Article'),
+        h('button',{onClick:e=>copyLink(item.url,i,e),style:{display:'flex',alignItems:'center',gap:10,padding:'12px 16px',width:'100%',background:'none',border:'none',cursor:'pointer',color:copied===i?B.primary:B.dark,fontWeight:600,fontSize:14,textAlign:'left'}},`${copied===i?'✓':'📋'} ${copied===i?'Copied!':'Copy Link'}`),
+      ]),
+    ])),
+    open!==null&&h('div',{key:'ov',onClick:()=>setOpen(null),style:{position:'fixed',inset:0,zIndex:9}}),
+  ]);
+}
+
+// ── Block renderer ─────────────────────────────────────────────────────────
+function Block({block,partner}){
+  const s=t=>partner?sub(t,partner):t;
+  switch(block.type){
+    case 'paragraph': return h('p',{style:{margin:'0 0 16px',color:'#374151',lineHeight:1.7,fontSize:15}},block.text);
+    case 'link-cards': return h('div',{style:{display:'flex',flexDirection:'column',gap:10,marginBottom:20}},
+      block.items.map((item,i)=>h('a',{key:i,href:item.url,target:'_blank',rel:'noreferrer',style:{display:'flex',alignItems:'center',gap:14,padding:'14px 18px',background:'#f8fafc',border:`1px solid ${B.border}`,borderRadius:10,textDecoration:'none',color:'inherit'}},[
+        h('span',{style:{fontSize:24}},item.icon),
+        h('div',null,[h('div',{style:{fontWeight:700,color:B.dark,fontSize:15}},`${item.label} — ${item.handle}`),h('div',{style:{fontSize:13,color:B.muted}},item.meta)]),
+        h('span',{style:{marginLeft:'auto',color:B.primary}},'→'),
+      ])));
+    case 'news-cards': return h(NewsCards,{items:block.items});
+    case 'testimonials': return h('div',{style:{display:'flex',flexDirection:'column',gap:14,marginBottom:20}},
+      block.items.map((item,i)=>h('div',{key:i,style:{padding:'18px 22px',background:B.light,border:`1px solid ${B.accent}`,borderRadius:12,borderLeft:`4px solid ${B.primary}`}},[
+        h('p',{style:{margin:'0 0 10px',fontSize:15,color:'#1f2937',lineHeight:1.7,fontStyle:'italic'}},`"${item.quote}"`),
+        h('div',{style:{fontWeight:700,color:B.primary,fontSize:14}},`— ${item.name}`),
+      ])));
+    case 'template': return h('div',{style:{marginBottom:24,border:`1px solid ${B.border}`,borderRadius:12,overflow:'hidden'}},[
+      h('div',{style:{display:'flex',alignItems:'center',gap:10,padding:'12px 18px',background:'#f8fafc',borderBottom:`1px solid ${B.border}`}},[
+        h(Pill,{label:block.tag,color:'#fff',bg:block.color}),
+        h('span',{style:{fontWeight:700,color:B.dark,fontSize:15}},block.label),
+        h('div',{style:{marginLeft:'auto'}},h(CopyBtn,{text:s(block.body)})),
+      ]),
+      h('pre',{style:{margin:0,padding:'16px 18px',fontSize:14,lineHeight:1.7,color:'#374151',whiteSpace:'pre-wrap',background:'#fff'}},s(block.body)),
+    ]);
+    default: return null;
+  }
+}
+
+// ── Messaging view (partner-facing) ───────────────────────────────────────
+function MessagingView({partner,partnerTmpls,globalTmpls}){
+  const resolved=partnerTmpls.length>0?partnerTmpls:globalTmpls.map(t=>({...t,body:sub(t.body,partner)}));
+  return h('div',null,[
+    h('p',{style:{margin:'0 0 20px',color:'#374151',lineHeight:1.7,fontSize:15}},'These templates are pre-filled with your details — just copy, paste, and send!'),
+    ...resolved.map((t,i)=>h(Block,{key:i,block:{type:'template',...t},partner:null})),
+  ]);
+}
+
+// ── Partner Portal ─────────────────────────────────────────────────────────
+function PartnerPortal({partner,partnerTmpls,globalTmpls,pages,onBack}){
+  const enabled=PAGES.filter(p=>(partner.enabled_pages||[]).includes(p.id));
+  const [active,setActive]=useState(enabled[0]?.id||null);
+  const page=PAGES.find(p=>p.id===active);
+  return h('div',{style:{display:'flex',height:'100vh',background:B.bg}},[
+    h('div',{style:{width:230,background:'#fff',borderRight:`1px solid ${B.border}`,display:'flex',flexDirection:'column'}},[
+      h('div',{style:{padding:'20px 16px 14px',borderBottom:`1px solid ${B.border}`}},[
+        h('div',{style:{display:'flex',alignItems:'center',gap:10}},[
+          h('div',{style:{width:36,height:36,borderRadius:8,background:B.primary,display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',fontWeight:800}},'N'),
+          h('div',null,[h('div',{style:{fontWeight:800,fontSize:13,color:B.dark}},'Neighbor Serve'),h('div',{style:{fontSize:11,color:B.muted}},'Affiliate Portal')]),
+        ]),
+        h('div',{style:{fontSize:12,color:B.muted,marginTop:6}},`👋 ${partner.name}`),
+        partner.company&&h('div',{style:{fontSize:12,color:B.muted}},partner.company),
+      ]),
+      h('nav',{style:{flex:1,padding:'10px 8px'}},
+        enabled.map(p=>h('button',{key:p.id,onClick:()=>setActive(p.id),style:{display:'flex',alignItems:'center',gap:10,width:'100%',padding:'9px 12px',marginBottom:2,background:active===p.id?B.light:'transparent',border:'none',borderRadius:8,cursor:'pointer',color:active===p.id?B.dark:'#374151',fontWeight:active===p.id?700:500,fontSize:14,textAlign:'left'}},p.icon,' ',p.label))
+      ),
+      onBack&&h('div',{style:{padding:'12px 16px',borderTop:`1px solid ${B.border}`}},h(Btn,{variant:'ghost',size:'sm',onClick:onBack},'← Back to Admin')),
+    ]),
+    h('div',{style:{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}},[
+      h('div',{style:{height:52,display:'flex',alignItems:'center',gap:12,padding:'0 24px',background:'#fff',borderBottom:`1px solid ${B.border}`,flexShrink:0}},[
+        h('span',{style:{fontSize:14,fontWeight:600,color:B.dark}},`${page?.icon} ${page?.label}`),
+        onBack&&h(Pill,{label:'Preview Mode',color:'#92400e',bg:'#fef3c7'}),
+      ]),
+      h('div',{style:{flex:1,overflowY:'auto',padding:'32px 36px',maxWidth:780}},[
+        active===enabled[0]?.id&&h('div',{style:{marginBottom:28,padding:'18px 22px',background:B.light,border:`1px solid ${B.accent}`,borderRadius:12}},[
+          h('div',{style:{fontWeight:800,fontSize:20,color:B.dark,marginBottom:6}},`Welcome, ${partner.name.split(' ')[0]}! 👋`),
+          h('div',{style:{color:'#374151',fontSize:15,lineHeight:1.6}},partner.welcome||''),
+        ]),
+        h('h2',{style:{fontSize:22,fontWeight:800,color:B.dark,margin:'0 0 20px'}},`${page?.icon} ${page?.label}`),
+        active==='messaging'
+          ? h(MessagingView,{partner,partnerTmpls,globalTmpls})
+          : (pages.find(p=>p.id===active)?.blocks||[]).map((block,i)=>h(Block,{key:i,block,partner})),
+      ]),
+    ]),
+  ]);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ── Global Content Editor ─────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Social Editor ──
+function SocialEditor({block,onChange}){
+  const items=block.items||[];
+  const ICONS=['📷','👍','💼','🐦','📸','▶️','🌐'];
+  const update=(i,field,val)=>onChange({...block,items:items.map((it,idx)=>idx===i?{...it,[field]:val}:it)});
+  const add=()=>onChange({...block,items:[...items,{label:'',handle:'',url:'',meta:'',icon:'🌐',_id:uid()}]});
+  const remove=i=>onChange({...block,items:items.filter((_,idx)=>idx!==i)});
+  const move=(i,dir)=>{
+    const arr=[...items];
+    const j=i+dir;
+    if(j<0||j>=arr.length)return;
+    [arr[i],arr[j]]=[arr[j],arr[i]];
+    onChange({...block,items:arr});
+  };
+  return h('div',null,[
+    ...items.map((item,i)=>h('div',{key:item._id||i,style:{marginBottom:12,padding:'14px 16px',background:'#f8fafc',border:`1px solid ${B.border}`,borderRadius:10}},[
+      h('div',{style:{display:'flex',gap:8,marginBottom:8,alignItems:'center'}},[
+        h('select',{value:item.icon,onChange:e=>update(i,'icon',e.target.value),style:{padding:'6px 8px',border:`1px solid ${B.border}`,borderRadius:6,fontSize:18,cursor:'pointer'}},
+          ICONS.map(ic=>h('option',{key:ic,value:ic},ic))),
+        h('input',{value:item.label,onChange:e=>update(i,'label',e.target.value),placeholder:'Platform (e.g. Instagram)',style:{flex:1,padding:'7px 10px',border:`1.5px solid ${B.border}`,borderRadius:7,fontSize:13}}),
+        h('input',{value:item.handle,onChange:e=>update(i,'handle',e.target.value),placeholder:'Handle (e.g. @neighborserve)',style:{flex:1,padding:'7px 10px',border:`1.5px solid ${B.border}`,borderRadius:7,fontSize:13}}),
+      ]),
+      h('div',{style:{display:'flex',gap:8}},[
+        h('input',{value:item.url,onChange:e=>update(i,'url',e.target.value),placeholder:'URL',style:{flex:2,padding:'7px 10px',border:`1.5px solid ${B.border}`,borderRadius:7,fontSize:13}}),
+        h('input',{value:item.meta,onChange:e=>update(i,'meta',e.target.value),placeholder:'Meta text (e.g. 397 Followers)',style:{flex:1,padding:'7px 10px',border:`1.5px solid ${B.border}`,borderRadius:7,fontSize:13}}),
+        h('div',{style:{display:'flex',gap:4}},[
+          h(Btn,{variant:'ghost',size:'sm',onClick:()=>move(i,-1),disabled:i===0},'↑'),
+          h(Btn,{variant:'ghost',size:'sm',onClick:()=>move(i,1),disabled:i===items.length-1},'↓'),
+          h(Btn,{variant:'danger',size:'sm',onClick:()=>remove(i)},'✕'),
+        ]),
+      ]),
+    ])),
+    h(Btn,{variant:'outline',size:'sm',onClick:add},'+ Add Social Link'),
+  ]);
+}
+
+// ── News Editor ──
+function NewsEditor({block,onChange}){
+  const items=block.items||[];
+  const ICONS=['📰','🎉','🎙️','🏡','🎧','🚀','📺','🎬','💡','🏆'];
+  const update=(i,field,val)=>onChange({...block,items:items.map((it,idx)=>idx===i?{...it,[field]:val}:it)});
+  const add=()=>onChange({...block,items:[...items,{title:'',source:'',url:'',icon:'📰',_id:uid()}]});
+  const remove=i=>onChange({...block,items:items.filter((_,idx)=>idx!==i)});
+  const move=(i,dir)=>{
+    const arr=[...items];const j=i+dir;
+    if(j<0||j>=arr.length)return;
+    [arr[i],arr[j]]=[arr[j],arr[i]];onChange({...block,items:arr});
+  };
+  return h('div',null,[
+    ...items.map((item,i)=>h('div',{key:item._id||i,style:{marginBottom:12,padding:'14px 16px',background:'#f8fafc',border:`1px solid ${B.border}`,borderRadius:10}},[
+      h('div',{style:{display:'flex',gap:8,marginBottom:8,alignItems:'center'}},[
+        h('select',{value:item.icon,onChange:e=>update(i,'icon',e.target.value),style:{padding:'6px 8px',border:`1px solid ${B.border}`,borderRadius:6,fontSize:18,cursor:'pointer'}},
+          ICONS.map(ic=>h('option',{key:ic,value:ic},ic))),
+        h('input',{value:item.title,onChange:e=>update(i,'title',e.target.value),placeholder:'Article title',style:{flex:1,padding:'7px 10px',border:`1.5px solid ${B.border}`,borderRadius:7,fontSize:13}}),
+      ]),
+      h('div',{style:{display:'flex',gap:8}},[
+        h('input',{value:item.url,onChange:e=>update(i,'url',e.target.value),placeholder:'URL',style:{flex:2,padding:'7px 10px',border:`1.5px solid ${B.border}`,borderRadius:7,fontSize:13}}),
+        h('input',{value:item.source,onChange:e=>update(i,'source',e.target.value),placeholder:'Source (e.g. IBJ)',style:{flex:1,padding:'7px 10px',border:`1.5px solid ${B.border}`,borderRadius:7,fontSize:13}}),
+        h('div',{style:{display:'flex',gap:4}},[
+          h(Btn,{variant:'ghost',size:'sm',onClick:()=>move(i,-1),disabled:i===0},'↑'),
+          h(Btn,{variant:'ghost',size:'sm',onClick:()=>move(i,1),disabled:i===items.length-1},'↓'),
+          h(Btn,{variant:'danger',size:'sm',onClick:()=>remove(i)},'✕'),
+        ]),
+      ]),
+    ])),
+    h(Btn,{variant:'outline',size:'sm',onClick:add},'+ Add Article'),
+  ]);
+}
+
+// ── Testimonials Editor ──
+function TestimonialsEditor({block,onChange}){
+  const items=block.items||[];
+  const update=(i,field,val)=>onChange({...block,items:items.map((it,idx)=>idx===i?{...it,[field]:val}:it)});
+  const add=()=>onChange({...block,items:[...items,{quote:'',name:'',_id:uid()}]});
+  const remove=i=>onChange({...block,items:items.filter((_,idx)=>idx!==i)});
+  const move=(i,dir)=>{
+    const arr=[...items];const j=i+dir;
+    if(j<0||j>=arr.length)return;
+    [arr[i],arr[j]]=[arr[j],arr[i]];onChange({...block,items:arr});
+  };
+  return h('div',null,[
+    ...items.map((item,i)=>h('div',{key:item._id||i,style:{marginBottom:12,padding:'14px 16px',background:'#f8fafc',border:`1px solid ${B.border}`,borderRadius:10}},[
+      h('div',{style:{marginBottom:8}},
+        h('textarea',{value:item.quote,onChange:e=>update(i,'quote',e.target.value),placeholder:'Enter testimonial quote…',rows:3,style:{width:'100%',padding:'8px 12px',border:`1.5px solid ${B.border}`,borderRadius:8,fontSize:14,resize:'vertical',lineHeight:1.6,boxSizing:'border-box'}})
+      ),
+      h('div',{style:{display:'flex',gap:8,alignItems:'center'}},[
+        h('input',{value:item.name,onChange:e=>update(i,'name',e.target.value),placeholder:'Person\'s name',style:{flex:1,padding:'7px 10px',border:`1.5px solid ${B.border}`,borderRadius:7,fontSize:13}}),
+        h('div',{style:{display:'flex',gap:4}},[
+          h(Btn,{variant:'ghost',size:'sm',onClick:()=>move(i,-1),disabled:i===0},'↑'),
+          h(Btn,{variant:'ghost',size:'sm',onClick:()=>move(i,1),disabled:i===items.length-1},'↓'),
+          h(Btn,{variant:'danger',size:'sm',onClick:()=>remove(i)},'✕'),
+        ]),
+      ]),
+    ])),
+    h(Btn,{variant:'outline',size:'sm',onClick:add},'+ Add Testimonial'),
+  ]);
+}
+
+// ── Global Template Editor (all sections) ──────────────────────────────────
+function GlobalTemplateEditor({pages,globalTmpls,onSavePage,onSaveTmpl}){
+  const [activeSection,setActiveSection]=useState('news');
+  const [pageEdits,setPageEdits]=useState({});
+  const [tmplEdits,setTmplEdits]=useState(globalTmpls.map(t=>({...t})));
+  const [activeTmplId,setActiveTmplId]=useState(globalTmpls[0]?.id||null);
+  const [saving,setSaving]=useState(false);
+  const [saved,setSaved]=useState(false);
+
+  useEffect(()=>{setTmplEdits(globalTmpls.map(t=>({...t})));setActiveTmplId(globalTmpls[0]?.id||null);},[globalTmpls]);
+
+  // Get current blocks for a page, with local edits overlaid
+  const getBlocks=id=>{
+    if(pageEdits[id]!==undefined)return pageEdits[id];
+    return pages.find(p=>p.id===id)?.blocks||[];
+  };
+
+  const setBlocks=(id,blocks)=>setPageEdits(e=>({...e,[id]:blocks}));
+
+  // Update a specific block within a page
+  const updateBlock=(pageId,blockIdx,newBlock)=>{
+    const blocks=getBlocks(pageId).map((b,i)=>i===blockIdx?newBlock:b);
+    setBlocks(pageId,blocks);
+  };
+
+  const activeTmpl=tmplEdits.find(t=>t.id===activeTmplId)||tmplEdits[0];
+  const updateTmplBody=val=>setTmplEdits(ts=>ts.map(t=>t.id===activeTmpl.id?{...t,body:val}:t));
+
+  const save=async()=>{
+    setSaving(true);
+    if(activeSection==='messaging'&&activeTmpl){
+      await onSaveTmpl(activeTmpl.id,activeTmpl.body);
+    } else if(pageEdits[activeSection]!==undefined){
+      await onSavePage(activeSection,pageEdits[activeSection]);
+    }
+    setSaving(false);setSaved(true);setTimeout(()=>setSaved(false),2500);
+  };
+
+  const SECTIONS=[
+    {id:'news',      label:'In The News',         icon:'📰'},
+    {id:'social',    label:'Social',               icon:'📱'},
+    {id:'testimonials',label:'Testimonials',       icon:'🗣️'},
+    {id:'messaging', label:'Messaging Templates',  icon:'✉️'},
+  ];
+
+  const isDirty=activeSection==='messaging'
+    ? activeTmpl?.body!==globalTmpls.find(t=>t.id===activeTmpl?.id)?.body
+    : pageEdits[activeSection]!==undefined;
+
+  return h('div',{style:{display:'flex',height:'100%',overflow:'hidden'}},[
+    // Section sidebar
+    h('div',{style:{width:180,borderRight:`1px solid ${B.border}`,background:'#fff',flexShrink:0,padding:'20px 10px'}},[
+      h('div',{style:{fontSize:11,fontWeight:700,color:B.muted,textTransform:'uppercase',letterSpacing:.5,padding:'0 8px',marginBottom:10}},'Sections'),
+      ...SECTIONS.map(s=>h('button',{key:s.id,onClick:()=>{setActiveSection(s.id);setSaved(false);},style:{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'9px 12px',marginBottom:2,background:activeSection===s.id?B.light:'transparent',border:'none',borderRadius:8,cursor:'pointer',color:activeSection===s.id?B.dark:'#374151',fontWeight:activeSection===s.id?700:500,fontSize:13,textAlign:'left'}},s.icon,' ',s.label)),
+    ]),
+
+    // Editor panel
+    h('div',{style:{flex:1,overflowY:'auto',padding:'28px 32px',maxWidth:720}},[
+      h('div',{style:{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:20}},[
+        h('div',null,[
+          h('h2',{style:{fontSize:20,fontWeight:800,color:B.dark,marginBottom:4}},
+            `${SECTIONS.find(s=>s.id===activeSection)?.icon} ${SECTIONS.find(s=>s.id===activeSection)?.label}`),
+          h('p',{style:{fontSize:13,color:B.muted}},'Changes go live for all partners as soon as you save.'),
+        ]),
+        h('div',{style:{display:'flex',gap:8,alignItems:'center'}},[
+          saved&&h('span',{style:{fontSize:13,color:B.primary,fontWeight:600}},'✓ Saved!'),
+          h(Btn,{onClick:save,disabled:saving||(!isDirty&&!saved)},saving?'Saving…':'Save Changes'),
+        ]),
+      ]),
+
+      // ── News section ──
+      activeSection==='news'&&h('div',null,
+        getBlocks('news').map((block,bi)=>
+          block.type==='news-cards'&&h(NewsEditor,{key:bi,block,onChange:nb=>updateBlock('news',bi,nb)})
+        )
+      ),
+
+      // ── Social section ──
+      activeSection==='social'&&h('div',null,
+        getBlocks('social').map((block,bi)=>
+          block.type==='link-cards'&&h(SocialEditor,{key:bi,block,onChange:nb=>updateBlock('social',bi,nb)})
+        )
+      ),
+
+      // ── Testimonials section ──
+      activeSection==='testimonials'&&h('div',null,
+        getBlocks('testimonials').map((block,bi)=>
+          block.type==='testimonials'&&h(TestimonialsEditor,{key:bi,block,onChange:nb=>updateBlock('testimonials',bi,nb)})
+        )
+      ),
+
+      // ── Messaging section ──
+      activeSection==='messaging'&&h('div',null,[
+        // Token reference
+        h('div',{style:{marginBottom:20,padding:'12px 16px',background:'#f8fafc',border:`1px solid ${B.border}`,borderRadius:10}},[
+          h('div',{style:{fontSize:12,fontWeight:700,color:B.muted,marginBottom:8,textTransform:'uppercase',letterSpacing:.5}},'Available Tokens'),
+          h('div',{style:{display:'flex',flexWrap:'wrap',gap:8}},
+            [['{{FIRST_NAME}}',"Recipient's first name"],['{{PARTNER_NAME}}',"Partner's full name"],['{{PARTNER_COMPANY}}',"Partner's company"],['{{PARTNER_LINK}}',"Partner's portal URL"]].map(([tok,desc])=>
+              h('div',{key:tok,style:{fontSize:12,padding:'4px 10px',background:'#fff',border:`1px solid ${B.border}`,borderRadius:6}},[
+                h('span',{style:{fontFamily:'monospace',color:B.primary,fontWeight:700}},tok),
+                h('span',{style:{color:B.muted,marginLeft:6}},`→ ${desc}`),
+              ])
+            )
+          ),
+        ]),
+        // Template switcher
+        h('div',{style:{display:'flex',gap:8,marginBottom:16}},
+          tmplEdits.map(t=>h('button',{key:t.id,onClick:()=>setActiveTmplId(t.id),style:{padding:'6px 16px',borderRadius:8,border:`1.5px solid ${activeTmpl?.id===t.id?B.primary:B.border}`,background:activeTmpl?.id===t.id?B.light:'#fff',color:activeTmpl?.id===t.id?B.dark:B.muted,fontWeight:activeTmpl?.id===t.id?700:500,fontSize:13,cursor:'pointer'}},t.label))
+        ),
+        activeTmpl&&h('div',{style:{border:`1px solid ${B.border}`,borderRadius:12,overflow:'hidden'}},[
+          h('div',{style:{display:'flex',alignItems:'center',gap:8,padding:'10px 16px',background:'#f8fafc',borderBottom:`1px solid ${B.border}`}},[
+            h(Pill,{label:activeTmpl.tag,color:'#fff',bg:activeTmpl.color}),
+            h('span',{style:{fontWeight:700,color:B.dark,fontSize:14}},activeTmpl.label),
+          ]),
+          h('textarea',{value:activeTmpl.body,onChange:e=>updateTmplBody(e.target.value),rows:14,style:{width:'100%',padding:'16px 18px',fontSize:14,lineHeight:1.7,border:'none',resize:'vertical',boxSizing:'border-box',color:'#374151',outline:'none'}}),
+          h('div',{style:{padding:'12px 18px',background:'#f0fdf4',borderTop:`1px solid ${B.accent}`}},[
+            h('div',{style:{fontSize:11,fontWeight:700,color:B.primary,marginBottom:4,textTransform:'uppercase',letterSpacing:.5}},'Preview'),
+            h('pre',{style:{fontSize:13,lineHeight:1.7,color:'#374151',whiteSpace:'pre-wrap'}},activeTmpl.body),
+          ]),
+        ]),
+      ]),
+    ]),
+  ]);
+}
+
+// ── Per-Partner Template Editor ────────────────────────────────────────────
+function PartnerTemplateEditor({partner,existingTmpls,globalTmpls,onSave,onCancel}){
+  const base=existingTmpls.length>0?existingTmpls:globalTmpls.map(t=>({...t,body:sub(t.body,partner)}));
+  const [tmpls,setTmpls]=useState(base.map(t=>({...t})));
+  const [activeIdx,setActiveIdx]=useState(0);
+  const [saving,setSaving]=useState(false);
+  const t=tmpls[activeIdx];
+  const updateBody=val=>setTmpls(ts=>ts.map((item,i)=>i===activeIdx?{...item,body:val}:item));
+  const resetOne=()=>updateBody(sub(globalTmpls[activeIdx]?.body||'',partner));
+  const resetAll=()=>setTmpls(globalTmpls.map(gt=>({...gt,body:sub(gt.body,partner)})));
+  return h('div',{style:{padding:'28px 32px',maxWidth:720}},[
+    h('h2',{style:{margin:'0 0 4px',fontSize:20,fontWeight:800,color:B.dark}},`Customize Messaging — ${partner.name}`),
+    h('p',{style:{margin:'0 0 20px',fontSize:13,color:B.muted}},'Changes here are saved only for this partner and won\'t affect anyone else.'),
+    h('div',{style:{marginBottom:20,padding:'12px 16px',background:'#f8fafc',border:`1px solid ${B.border}`,borderRadius:10}},[
+      h('div',{style:{fontSize:12,fontWeight:700,color:B.muted,marginBottom:8,textTransform:'uppercase',letterSpacing:.5}},'Tokens for this partner'),
+      h('div',{style:{display:'flex',flexWrap:'wrap',gap:8}},
+        [['{{FIRST_NAME}}',"Recipient's first name"],['{{PARTNER_NAME}}',partner.name],['{{PARTNER_COMPANY}}',partner.company||'(none set)'],['{{PARTNER_LINK}}',partner.portal_url]].map(([tok,val])=>
+          h('div',{key:tok,style:{fontSize:12,padding:'4px 10px',background:'#fff',border:`1px solid ${B.border}`,borderRadius:6}},[
+            h('span',{style:{fontFamily:'monospace',color:B.primary,fontWeight:700}},tok),
+            h('span',{style:{color:B.muted,marginLeft:6}},`→ ${val}`),
+          ])
+        )
+      ),
+    ]),
+    h('div',{style:{display:'flex',gap:8,marginBottom:16}},
+      tmpls.map((tmpl,i)=>h('button',{key:i,onClick:()=>setActiveIdx(i),style:{padding:'6px 16px',borderRadius:8,border:`1.5px solid ${activeIdx===i?B.primary:B.border}`,background:activeIdx===i?B.light:'#fff',color:activeIdx===i?B.dark:B.muted,fontWeight:activeIdx===i?700:500,fontSize:13,cursor:'pointer'}},tmpl.label))
+    ),
+    t&&h('div',{style:{border:`1px solid ${B.border}`,borderRadius:12,overflow:'hidden',marginBottom:16}},[
+      h('div',{style:{display:'flex',alignItems:'center',gap:8,padding:'10px 16px',background:'#f8fafc',borderBottom:`1px solid ${B.border}`}},[
+        h(Pill,{label:t.tag,color:'#fff',bg:t.color}),
+        h('span',{style:{fontWeight:700,color:B.dark,fontSize:14}},t.label),
+        h('div',{style:{marginLeft:'auto'}},h(Btn,{variant:'amber',size:'sm',onClick:resetOne},'↺ Reset to global default')),
+      ]),
+      h('textarea',{value:t.body,onChange:e=>updateBody(e.target.value),rows:13,style:{width:'100%',padding:'16px 18px',fontSize:14,lineHeight:1.7,border:'none',resize:'vertical',boxSizing:'border-box',color:'#374151',outline:'none'}}),
+      h('div',{style:{padding:'12px 18px',background:'#f0fdf4',borderTop:`1px solid ${B.accent}`}},[
+        h('div',{style:{fontSize:11,fontWeight:700,color:B.primary,marginBottom:4,textTransform:'uppercase',letterSpacing:.5}},'Live Preview'),
+        h('pre',{style:{fontSize:13,lineHeight:1.7,color:'#374151',whiteSpace:'pre-wrap'}},t.body),
+      ]),
+    ]),
+    h('div',{style:{display:'flex',gap:10,alignItems:'center'}},[
+      h(Btn,{onClick:async()=>{setSaving(true);await onSave(tmpls);setSaving(false);},disabled:saving},saving?'Saving…':'Save Templates'),
+      h(Btn,{variant:'outline',onClick:onCancel},'Cancel'),
+      h(Btn,{variant:'ghost',size:'sm',onClick:resetAll,style:{marginLeft:'auto',color:'#dc2626'}},'Reset all to global defaults'),
+    ]),
+  ]);
+}
+
+// ── Partner Form ───────────────────────────────────────────────────────────
+function PartnerForm({partner,onSave,onCancel}){
+  const isNew=!partner.id;
+  const [form,setForm]=useState({name:partner.name||'',company:partner.company||'',welcome:partner.welcome||'',portal_url:partner.portal_url||'',enabled_pages:partner.enabled_pages||PAGES.map(p=>p.id)});
+  const set=(k,v)=>setForm(f=>({...f,[k]:v}));
+  const togglePage=id=>set('enabled_pages',form.enabled_pages.includes(id)?form.enabled_pages.filter(x=>x!==id):[...form.enabled_pages,id]);
+  const [saving,setSaving]=useState(false);
+  const handleSave=async()=>{
+    if(!form.name.trim())return alert('Name is required.');
+    setSaving(true);
+    const slug=slugify(form.name);
+    await onSave({...partner,...form,slug,portal_url:form.portal_url||`https://neighborserve.com/p/${slug}`,date_added:partner.date_added||new Date().toISOString().split('T')[0]});
+    setSaving(false);
+  };
+  return h('div',{style:{padding:'28px 32px',maxWidth:620}},[
+    h('h2',{style:{margin:'0 0 24px',fontSize:20,fontWeight:800,color:B.dark}},isNew?'Add New Partner':`Edit — ${partner.name}`),
+    ...[['Partner Name *','name','text','Full name'],['Company / Brokerage','company','text','e.g. RE/MAX Advanced Realty'],['Welcome Message','welcome','textarea','Personalized greeting shown at top of their portal'],['Personal Portal URL','portal_url','text','https://neighborserve.com/p/their-name']].map(([label,key,type,ph])=>
+      h('div',{key,style:{marginBottom:18}},[
+        h('label',{style:{display:'block',fontSize:13,fontWeight:600,color:B.dark,marginBottom:5}},label),
+        type==='textarea'
+          ? h('textarea',{value:form[key],onChange:e=>set(key,e.target.value),placeholder:ph,rows:3,style:{width:'100%',padding:'9px 12px',border:`1.5px solid ${B.border}`,borderRadius:8,fontSize:14,resize:'vertical',boxSizing:'border-box'}})
+          : h('input',{type:'text',value:form[key],onChange:e=>set(key,e.target.value),placeholder:ph,style:{width:'100%',padding:'9px 12px',border:`1.5px solid ${B.border}`,borderRadius:8,fontSize:14,boxSizing:'border-box'}}),
+      ])
+    ),
+    h('div',{style:{marginBottom:24}},[
+      h('label',{style:{display:'block',fontSize:13,fontWeight:600,color:B.dark,marginBottom:10}},'Enabled Pages'),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:10}},
+        PAGES.map(p=>h('div',{key:p.id,style:{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',background:'#f8fafc',border:`1px solid ${B.border}`,borderRadius:8}},[
+          h('span',{style:{fontSize:14,fontWeight:500,color:'#374151'}},`${p.icon} ${p.label}`),
+          h(Toggle,{checked:form.enabled_pages.includes(p.id),onChange:()=>togglePage(p.id)}),
+        ]))
+      ),
+    ]),
+    h('div',{style:{display:'flex',gap:10}},[
+      h(Btn,{onClick:handleSave,disabled:saving},saving?'Saving…':'Save Partner'),
+      h(Btn,{variant:'outline',onClick:onCancel},'Cancel'),
+    ]),
+  ]);
+}
+
+// ── Partners List ──────────────────────────────────────────────────────────
+function PartnersList({partners,onAdd,onEdit,onPreview,onDelete,onCustomize}){
+  const [search,setSearch]=useState('');
+  const filtered=partners.filter(p=>p.name.toLowerCase().includes(search.toLowerCase()));
+  return h('div',{style:{padding:'28px 32px'}},[
+    h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:24}},[
+      h('div',null,[h('h2',{style:{margin:0,fontSize:20,fontWeight:800,color:B.dark}},'Partners'),h('div',{style:{fontSize:13,color:B.muted,marginTop:2}},`${partners.length} total`)]),
+      h(Btn,{onClick:onAdd},'+ Add Partner'),
+    ]),
+    h('input',{value:search,onChange:e=>setSearch(e.target.value),placeholder:'Search partners…',style:{width:'100%',padding:'9px 14px',border:`1.5px solid ${B.border}`,borderRadius:8,fontSize:14,marginBottom:16,boxSizing:'border-box'}}),
+    h('div',{style:{display:'flex',flexDirection:'column',gap:10}},
+      filtered.length===0
+        ? h('div',{style:{textAlign:'center',color:B.muted,padding:32}},'No partners found.')
+        : filtered.map(p=>h('div',{key:p.id,style:{background:'#fff',border:`1px solid ${B.border}`,borderRadius:12,overflow:'hidden'}},[
+            h('div',{style:{display:'flex',alignItems:'center',gap:14,padding:'14px 18px'}},[
+              h('div',{style:{width:40,height:40,borderRadius:10,background:avatarColor(p.name),display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',fontWeight:800,fontSize:15,flexShrink:0}},initials(p.name)),
+              h('div',{style:{flex:1,minWidth:0}},[
+                h('div',{style:{fontWeight:700,color:B.dark,fontSize:15}},p.name),
+                h('div',{style:{fontSize:12,color:B.muted}},`${p.company?p.company+' · ':''}Added ${p.date_added} · ${(p.enabled_pages||[]).length} pages`),
+              ]),
+              h('div',{style:{display:'flex',gap:6,flexWrap:'wrap',justifyContent:'flex-end'}},[
+                ...PAGES.filter(pg=>(p.enabled_pages||[]).includes(pg.id)).map(pg=>h('span',{key:pg.id,style:{fontSize:11,padding:'2px 8px',background:B.light,color:B.primary,borderRadius:20,fontWeight:600}},pg.icon)),
+                p._hasCustomTmpls&&h(Pill,{key:'ct',label:'Custom ✉️',color:'#92400e',bg:'#fef3c7'}),
+              ]),
+            ]),
+            h('div',{style:{display:'flex',gap:8,padding:'10px 18px',borderTop:`1px solid ${B.border}`,background:'#fafafa',flexWrap:'wrap'}},[
+              h(Btn,{variant:'outline',size:'sm',onClick:()=>onPreview(p)},'👁 Preview'),
+              h(Btn,{variant:'outline',size:'sm',onClick:()=>onEdit(p)},'✏️ Edit'),
+              h(Btn,{variant:'amber',size:'sm',onClick:()=>onCustomize(p)},'✉️ Customize Messaging'),
+              h(CopyBtn,{text:p.portal_url}),
+              h(Btn,{variant:'danger',size:'sm',onClick:()=>{if(confirm(`Delete ${p.name}?`))onDelete(p.id);}},'✕'),
+            ]),
+          ]))
+    ),
+  ]);
+}
+
+// ── Admin Shell ────────────────────────────────────────────────────────────
+function AdminShell({onLogout}){
+  const [partners,setPartners]=useState([]);
+  const [pages,setPages]=useState([]);
+  const [globalTmpls,setGlobalTmpls]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [view,setView]=useState('list');
+  const [selected,setSelected]=useState(null);
+
+  useEffect(()=>{
+    Promise.all([db.partners(),db.globalPages(),db.globalTmpls()]).then(([pr,pg,pt])=>{
+      setPartners((pr.data||[]).map(p=>({...p,_hasCustomTmpls:false})));
+      setPages(pg.data||[]);setGlobalTmpls(pt.data||[]);setLoading(false);
+    });
+  },[]);
+
+  const loadPartnerTmpls=async p=>{const{data}=await db.partnerTmpls(p.id);return data||[];};
+  const handlePreview=async p=>{const t=await loadPartnerTmpls(p);setSelected({...p,_tmpls:t});setView('preview');};
+  const handleCustomize=async p=>{const t=await loadPartnerTmpls(p);setSelected({...p,_tmpls:t});setView('customize');};
+
+  const handleSavePartner=async payload=>{
+    if(selected?.id){
+      const{data}=await db.updatePartner(selected.id,payload);
+      setPartners(ps=>ps.map(p=>p.id===selected.id?{...data,_hasCustomTmpls:p._hasCustomTmpls}:p));
+    } else {
+      const{data}=await db.createPartner(payload);
+      setPartners(ps=>[{...data,_hasCustomTmpls:false},...ps]);
+    }
+    setView('list');
+  };
+
+  const handleSaveTmpls=async tmpls=>{
+    await db.upsertTmpls(selected.id,tmpls.map(t=>({template_id:t.id,label:t.label,tag:t.tag,color:t.color,body:t.body})));
+    setPartners(ps=>ps.map(p=>p.id===selected.id?{...p,_hasCustomTmpls:true}:p));
+    setView('list');
+  };
+
+  const handleSavePage=async(id,blocks)=>{
+    await db.updateGlobalPage(id,blocks);
+    setPages(ps=>ps.map(p=>p.id===id?{...p,blocks}:p));
+  };
+
+  const handleSaveTmpl=async(id,body)=>{
+    await db.updateGlobalTmpl(id,body);
+    setGlobalTmpls(ts=>ts.map(t=>t.id===id?{...t,body}:t));
+  };
+
+  if(loading)return h(Spinner);
+  if(view==='preview'&&selected)return h(PartnerPortal,{partner:selected,partnerTmpls:selected._tmpls||[],globalTmpls,pages,onBack:()=>{setView('list');setSelected(null);}});
+
+  return h('div',{style:{display:'flex',height:'100vh',background:B.bg}},[
+    // Sidebar
+    h('div',{style:{width:200,background:'#fff',borderRight:`1px solid ${B.border}`,display:'flex',flexDirection:'column'}},[
+      h('div',{style:{padding:'20px 16px 14px',borderBottom:`1px solid ${B.border}`}},[
+        h('div',{style:{display:'flex',alignItems:'center',gap:8}},[
+          h('div',{style:{width:34,height:34,background:B.primary,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',fontWeight:800}},'N'),
+          h('div',null,[h('div',{style:{fontWeight:800,fontSize:12,color:B.dark}},'Neighbor Serve'),h('div',{style:{fontSize:10,color:B.muted}},'Admin')]),
+        ]),
+      ]),
+      h('nav',{style:{flex:1,padding:'10px 8px'}},
+        [['list','👥 Partners'],['global','🗂️ Global Content']].map(([id,label])=>
+          h('button',{key:id,onClick:()=>{setView(id);setSelected(null);},style:{display:'flex',alignItems:'center',gap:8,width:'100%',padding:'9px 12px',marginBottom:2,background:view===id?B.light:'transparent',border:'none',borderRadius:8,cursor:'pointer',color:view===id?B.dark:'#374151',fontWeight:view===id?700:500,fontSize:13,textAlign:'left'}},label)
+        )
+      ),
+      h('div',{style:{padding:'12px 16px',borderTop:`1px solid ${B.border}`}},h(Btn,{variant:'ghost',size:'sm',onClick:onLogout},'Sign out')),
+    ]),
+    // Main
+    h('div',{style:{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}},[
+      view==='list'&&h('div',{style:{flex:1,overflowY:'auto'}},h(PartnersList,{partners,onAdd:()=>{setSelected({enabled_pages:PAGES.map(p=>p.id)});setView('form');},onEdit:p=>{setSelected(p);setView('form');},onPreview:handlePreview,onDelete:async id=>{await db.deletePartner(id);setPartners(ps=>ps.filter(p=>p.id!==id));},onCustomize:handleCustomize})),
+      view==='form'&&selected&&h('div',{style:{flex:1,overflowY:'auto'}},h(PartnerForm,{partner:selected,onSave:handleSavePartner,onCancel:()=>setView('list')})),
+      view==='customize'&&selected&&h('div',{style:{flex:1,overflowY:'auto'}},h(PartnerTemplateEditor,{partner:selected,existingTmpls:selected._tmpls||[],globalTmpls,onSave:handleSaveTmpls,onCancel:()=>setView('list')})),
+      view==='global'&&h(GlobalTemplateEditor,{pages,globalTmpls,onSavePage:handleSavePage,onSaveTmpl:handleSaveTmpl}),
+    ]),
+  ]);
+}
+
+// ── Login ──────────────────────────────────────────────────────────────────
+function LoginScreen(){
+  const [email,setEmail]=useState('');
+  const [pw,setPw]=useState('');
+  const [loading,setLoading]=useState(false);
+  const [err,setErr]=useState('');
+  const signIn=async()=>{
+    if(!email||!pw)return setErr('Please enter your email and password.');
+    setLoading(true);setErr('');
+    const{error}=await db.signIn(email,pw);
+    setLoading(false);
+    if(error)setErr(error.message==='Invalid login credentials'?'Incorrect email or password.':error.message);
+  };
+  return h('div',{style:{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:B.bg}},[
+    h('div',{style:{width:380,background:'#fff',borderRadius:16,border:`1px solid ${B.border}`,padding:'40px 36px',boxShadow:'0 4px 24px rgba(0,0,0,.06)'}},[
+      h('div',{style:{display:'flex',alignItems:'center',gap:12,marginBottom:28}},[
+        h('div',{style:{width:42,height:42,background:B.primary,borderRadius:10,display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',fontWeight:800,fontSize:20}},'N'),
+        h('div',null,[h('div',{style:{fontWeight:800,fontSize:16,color:B.dark}},'Neighbor Serve'),h('div',{style:{fontSize:12,color:B.muted}},'Admin Portal')]),
+      ]),
+      h('h2',{style:{margin:'0 0 6px',fontSize:20,fontWeight:800,color:B.dark}},'Sign in'),
+      h('p',{style:{margin:'0 0 24px',color:B.muted,fontSize:14}},'Enter your credentials to access the admin portal.'),
+      h('label',{style:{display:'block',fontSize:13,fontWeight:600,color:B.dark,marginBottom:5}},'Email'),
+      h('input',{type:'email',value:email,onChange:e=>setEmail(e.target.value),onKeyDown:e=>e.key==='Enter'&&signIn(),placeholder:'jason@neighborserve.com',style:{width:'100%',padding:'10px 14px',border:`1.5px solid ${err?'#dc2626':B.border}`,borderRadius:8,fontSize:14,marginBottom:12,boxSizing:'border-box'}}),
+      h('label',{style:{display:'block',fontSize:13,fontWeight:600,color:B.dark,marginBottom:5}},'Password'),
+      h('input',{type:'password',value:pw,onChange:e=>setPw(e.target.value),onKeyDown:e=>e.key==='Enter'&&signIn(),placeholder:'••••••••',style:{width:'100%',padding:'10px 14px',border:`1.5px solid ${err?'#dc2626':B.border}`,borderRadius:8,fontSize:14,marginBottom:err?8:16,boxSizing:'border-box'}}),
+      err&&h('div',{style:{fontSize:13,color:'#dc2626',marginBottom:14,padding:'8px 12px',background:'#fee2e2',borderRadius:6}},err),
+      h(Btn,{onClick:signIn,disabled:loading,style:{width:'100%'}},loading?'Signing in…':'Sign In'),
+    ]),
+  ]);
+}
+
+// ── Public portal loader ───────────────────────────────────────────────────
+function PortalRoute({slug}){
+  const [partner,setPartner]=useState(null);
+  const [partnerTmpls,setPartnerTmpls]=useState([]);
+  const [pages,setPages]=useState([]);
+  const [globalTmpls,setGlobalTmpls]=useState([]);
+  const [error,setError]=useState(null);
+  useEffect(()=>{
+    Promise.all([db.partnerBySlug(slug),db.globalPages(),db.globalTmpls()]).then(([pr,pg,pt])=>{
+      if(pr.error||!pr.data)return setError('Portal not found.');
+      setPartner(pr.data);setPages(pg.data||[]);setGlobalTmpls(pt.data||[]);
+      db.partnerTmpls(pr.data.id).then(({data})=>setPartnerTmpls(data||[]));
+    });
+  },[slug]);
+  if(error)return h('div',{style:{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',color:B.muted,fontSize:16}},error);
+  if(!partner)return h(Spinner);
+  return h(PartnerPortal,{partner,partnerTmpls,globalTmpls,pages,onBack:null});
+}
+
+// ── Root ───────────────────────────────────────────────────────────────────
+function App(){
+  const [session,setSession]=useState(null);
+  const [authLoading,setAuthLoading]=useState(true);
+  const [route,setRoute]=useState(null);
+  useEffect(()=>{
+    const hash=window.location.hash.replace('#','');
+    if(hash.startsWith('portal/'))setRoute({type:'portal',slug:hash.replace('portal/','')});
+    if(!getConfig()){setAuthLoading(false);return;}
+    db.getSession().then(({data:{session}})=>{setSession(session);setAuthLoading(false);});
+    const{data:{subscription}}=db.onAuthChange((_,s)=>setSession(s));
+    return()=>subscription.unsubscribe();
+  },[]);
+  if(route?.type==='portal')return h(PortalRoute,{slug:route.slug});
+  if(authLoading||!getConfig())return null;
+  if(!session)return h(LoginScreen);
+  return h(AdminShell,{onLogout:()=>db.signOut()});
+}
+function initApp(){ReactDOM.createRoot(document.getElementById('root')).render(h(App));}
+if(getConfig())initApp();
+</script>
+</body>
+</html>
