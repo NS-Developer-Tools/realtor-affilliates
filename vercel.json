@@ -1,0 +1,4 @@
+{
+  "outputDirectory": ".",
+  "rewrites": [{ "source": "/(.*)", "destination": "/single_file_app.html" }]
+}
